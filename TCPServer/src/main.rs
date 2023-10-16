@@ -1,88 +1,48 @@
 use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write, Error};
 use std::thread;
+use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 
-fn handle_client(mut stream: TcpStream, address: &str) -> Result<(), Error>  {
-    let mut msg: Vec<u8> = Vec::new();
+fn handle_client(mut stream: TcpStream, clients: Arc<Mutex<Vec<TcpStream>>>) {
+    let client_clone = stream.try_clone().expect("Failed to clone client stream.");
+    clients.lock().unwrap().push(client_clone);
+
+    let mut buffer = [0; 1024];
     loop {
-        let mut buf = [0; 10];
-        let received= stream.read(&mut buf)?;
-        if received < 1 {
-            println!("Client disconnected {}", address);
-            break Ok(())
-        }
+        let bytes_read = stream.read(&mut buffer);
+        let bytes_unwrap = bytes_read.unwrap();
+        if bytes_unwrap != 0 {
+            let message = String::from_utf8_lossy(&buffer[0..bytes_unwrap]);
+            println!("Received: {}", message);
 
-        let mut x = 0;
-        for c in buf {
-            // si on a dépassé le nombre d'octets reçus, inutile de continuer
-            if x >= received {
-                break;
+            let clients = clients.lock().unwrap();
+            for mut client in clients.iter() {
+                client.write_all(message.as_bytes()).expect("Failed to send message to a client.");
             }
-            x += 1;
-            if c == '\n' as u8 {
-                println!("message reçu {} : {}",
-                         address,
-                         // on convertit maintenant notre buffer en String
-                         String::from_utf8(msg).unwrap()
-                );
-                stream.write(b"ok")?;
-                msg = Vec::new();
-            } else {
-                msg.push(c);
-            }
+        } else {
+            continue;
         }
     }
 }
 
-fn main() -> Result<(), Error> {
-    let listener = TcpListener::bind("127.0.0.1:1234")?;
-    println!("En attente d'un client...");
-
-    for upstream in listener.incoming() {
-        let stream = match upstream {
-            Ok(stream) => stream,
-            Err(e) => {
-                eprintln!("Error {}", e);
-                continue;
-            }
-        };
-
-        let address = stream.peer_addr().unwrap();
-        println!("Nouveau client [adresse : {}]", address);
-        thread::spawn(move || {
-            let address_str = format!("[adresse : {}]", address);
-            if let Err(e) = handle_client(stream, &address_str) {
-                println!("Erreur dans handle_client : {}", e);
-            }
-        });
-        println!("En attente d'un autre client...");
-    }
-    Ok(())
-}
-
-/*
 fn main() {
-    let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:1234").expect("Failed to bind to address.");
+    println!("Server listening on 127.0.0.1:1234...");
 
-    println!("En attente d'un client...");
+    let clients: Arc<Mutex<Vec<TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
+
     for stream in listener.incoming() {
         match stream {
-            Ok(stream) => {
-                let adresse = match stream.peer_addr() {
-                    Ok(addr) => format!("[adresse : {}]", addr),
-                    Err(_) => "inconnue".to_owned()
-                };
+            Ok(client) => {
+                let clients_clone = Arc::clone(&clients);
 
-                println!("Nouveau client {}", adresse);
-                thread::spawn(move|| {
-                    handle_client(stream, &*adresse)
+                thread::spawn(move || {
+                    handle_client(client, clients_clone);
                 });
             }
             Err(e) => {
-                println!("La connexion du client a échoué : {}", e);
+                eprintln!("Error accepting client: {}", e);
             }
         }
-        println!("En attente d'un autre client...");
     }
 }
- */

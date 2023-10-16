@@ -1,47 +1,47 @@
 use std::net::TcpStream;
-use std::io::{Write, Read, stdin};
+use std::io::{Write, Read};
+use std::thread;
+use std::io;
 
-fn get_entry() -> Result<String, std::io::Error> {
-    let mut buf = String::new();
-    stdin().read_line(&mut buf).expect("read_line error");
-    Ok(buf.replace("\n", "").replace("\r", ""))
-}
+fn main() -> Result<(), io::Error> {
+    println!("Bienvenue sur le client de chat multicanal!");
+    println!("Entrez votre nom d'utilisateur : ");
+    let mut username = String::new();
+    io::stdin().read_line(&mut username)?;
 
-fn exchange_with_server(mut stream: TcpStream) -> Result<(), std::io::Error> {
-    let stdout = std::io::stdout();
-    let mut io = stdout.lock();
-    let mut buf = [0; 3];
+    let username = username.trim();
 
-    println!("Enter 'quit' when you want to leave");
-    loop {
-        write!(io, "> ")?;
-        // pour afficher de suite
-        io.flush()?;
-        match &*get_entry()? {
-            "quit" => {
-                println!("bye !");
-                break Ok(());
-            }
-            "hello" =>{
-                println!(r#"Hellow \o/ "#);
-            }
-            line => {
-                write!(stream, "{}\n", line)?;
-                let received = stream.read(&mut buf)?;
-                if received < 1 {
-                    println!("Perte de la connexion avec le serveur");
-                    break Ok(());
-                }
-                println!("Réponse du serveur : {:?}", String::from_utf8_lossy(&buf[..received]));
+    let mut stream = TcpStream::connect("127.0.0.1:1234")?;
+    let mut cloned_stream = stream.try_clone()?;
+
+    // Crée un thread pour lire les messages du serveur
+    let receive_thread = thread::spawn(move || {
+        let mut buffer = [0; 1024];
+        loop {
+            let bytes_read = cloned_stream.read(&mut buffer);
+            if bytes_read.is_ok() {
+                let message = String::from_utf8_lossy(&buffer[0..bytes_read.unwrap()]);
+                println!("{}", message);
+            } else {
+                break;
             }
         }
-    }
-}
+    });
 
-fn main() -> Result<(), std::io::Error> {
-    println!("Tentative de connexion au serveur...");
-    let stream = TcpStream::connect("127.0.0.1:1234")?;
-    println!("Connexion au serveur réussie !");
-    exchange_with_server(stream)?;
+    // Envoie les messages au serveur
+    loop {
+        let mut message = String::new();
+        io::stdin().read_line(&mut message)?;
+
+        let message = message.trim();
+        if message == "quit" {
+            break;
+        }
+
+        let full_message = format!("{}: {}\n", username, message);
+        stream.write(full_message.as_bytes())?;
+    }
+
+    receive_thread.join().expect("Erreur lors de la jointure du thread de réception.");
     Ok(())
 }
