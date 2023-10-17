@@ -1,47 +1,67 @@
-use std::net::TcpStream;
-use std::io::{Write, Read};
-use std::thread;
-use std::io;
+use std::error::Error;
+use tokio::{task, net::TcpStream, io::{AsyncReadExt, AsyncWriteExt}, io};
+use tokio::io::AsyncBufReadExt;
 
-fn main() -> Result<(), io::Error> {
+fn is_valid_utf8(input: &str) -> bool {
+    input.chars().all(|c| c.is_ascii() || c.is_ascii_alphabetic() || c.is_ascii_digit() || c.is_ascii_punctuation())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+
+    let stream = TcpStream::connect("127.0.0.1:1234").await.expect("Failed to connect to the server");
+    let (mut reader, mut writer) = stream.into_split();
+
     println!("Bienvenue sur le client de chat multicanal!");
-    println!("Entrez votre nom d'utilisateur : ");
-    let mut username = String::new();
-    io::stdin().read_line(&mut username)?;
+    println!("Pseudo: ");
+    let mut nickname = String::new();
+    let stdin = io::stdin(); // tokio io
+    let nick = std::io::stdin();
+    nick.read_line(&mut nickname).expect("");
+    writer.write_all(nickname.as_bytes()).await?;
 
-    let username = username.trim();
 
-    let mut stream = TcpStream::connect("127.0.0.1:1234")?;
-    let mut cloned_stream = stream.try_clone()?;
+    let client_task = task::spawn(async move {
 
-    // Crée un thread pour lire les messages du serveur
-    let receive_thread = thread::spawn(move || {
-        let mut buffer = [0; 1024];
-        loop {
-            let bytes_read = cloned_stream.read(&mut buffer);
-            if bytes_read.is_ok() {
-                let message = String::from_utf8_lossy(&buffer[0..bytes_read.unwrap()]);
-                println!("{}", message);
-            } else {
-                break;
+        let read_task = task::spawn(async move {
+            let mut msg = [0; 4096];
+            loop {
+                match reader.read(&mut msg[..]).await {
+                    Ok(0) => break, // Connexion fermée
+                    Ok(bytes) => {
+                        println!("{}", String::from_utf8_lossy(&msg[..bytes]));
+                    }
+                    Err(e) => {
+                        eprintln!("Erreur de lecture : {}", e);
+                        break;
+                    }
+                }
             }
+        });
+
+        let send_task = task::spawn(async move {
+            let mut message = String::new();
+            loop {
+                std::io::stdin().read_line(&mut message).expect("");
+                //let message = message.trim();
+                if message == "quit" {
+                    break;
+                }
+                if !message.is_empty(){
+                    writer.write(message.as_bytes()).await.expect("Failed to write to server");
+                    writer.flush().await.expect("Failed to flush");
+                }
+                message.clear();
+            }
+        });
+
+        tokio::select! {
+            _ = read_task => (),
+            _ = send_task => (),
         }
     });
 
-    // Envoie les messages au serveur
-    loop {
-        let mut message = String::new();
-        io::stdin().read_line(&mut message)?;
+    client_task.await.expect("Client task failed");
 
-        let message = message.trim();
-        if message == "quit" {
-            break;
-        }
-
-        let full_message = format!("{}: {}\n", username, message);
-        stream.write(full_message.as_bytes())?;
-    }
-
-    receive_thread.join().expect("Erreur lors de la jointure du thread de réception.");
     Ok(())
 }
